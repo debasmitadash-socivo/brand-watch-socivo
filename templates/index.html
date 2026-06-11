@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Brand Watch — AI Brand Sentiment Monitor</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<div class="layout">
+
+  <!-- ============================ Configuration sidebar -->
+  <aside class="sidebar no-print" id="sidebar">
+    <div class="brand-block">
+      <h1>Brand Watch</h1>
+      <p class="tagline">AI-powered brand sentiment monitoring for B2B teams</p>
+    </div>
+
+    <div class="credits-badge" id="credits-badge">Checking credits…</div>
+
+    <section class="config-group">
+      <h2>1 · API keys <span class="hint">(yours, never stored on our servers)</span></h2>
+      <label>Google Gemini API key
+        <input type="password" id="cfg-gemini" placeholder="AIza…" autocomplete="off">
+      </label>
+      <p class="micro">Free key from <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a>. Kept in this browser only.</p>
+      <label>Reddit Client ID
+        <input type="password" id="cfg-reddit-id" placeholder="optional" autocomplete="off">
+      </label>
+      <label>Reddit Client Secret
+        <input type="password" id="cfg-reddit-secret" placeholder="optional" autocomplete="off">
+      </label>
+      <label>Reddit username
+        <input type="text" id="cfg-reddit-user" placeholder="optional — used in the API user-agent" autocomplete="off">
+      </label>
+      <p class="micro">Create a free “script” app at <a href="https://www.reddit.com/prefs/apps" target="_blank" rel="noopener">reddit.com/prefs/apps</a>.</p>
+    </section>
+
+    <section class="config-group">
+      <h2>2 · Your company</h2>
+      <label>Website URL
+        <input type="text" id="cfg-website" placeholder="https://yourcompany.com">
+      </label>
+      <label>Industry <span class="hint">(optional override)</span>
+        <input type="text" id="cfg-industry" placeholder="e.g. SaaS, recruitment, fintech">
+      </label>
+    </section>
+
+    <section class="config-group">
+      <h2>3 · Custom URLs <span class="hint">(optional)</span></h2>
+      <div id="custom-url-list"></div>
+      <button type="button" class="btn btn-ghost" id="btn-add-url">+ Add URL</button>
+    </section>
+
+    <button type="button" class="btn btn-primary btn-block" id="btn-discover">Discover my brand →</button>
+    <div class="error-box" id="discover-error" hidden></div>
+  </aside>
+
+  <!-- ============================ Main column -->
+  <main class="main">
+
+    <!-- Print-only report header -->
+    <div class="print-only report-header">
+      <h1>Brand Reputation Report</h1>
+      <p id="print-brand-line"></p>
+      <p id="print-date-line"></p>
+    </div>
+
+    <!-- Empty state -->
+    <section class="panel hero no-print" id="hero-panel">
+      <h2>Find out what the internet really says about your brand</h2>
+      <p>Paste your free API keys, enter your website URL, and Brand Watch will work out who you are,
+         where your reputation lives, and what your customers are saying — across review platforms,
+         Reddit and X. Two full analysis runs are free.</p>
+      <ol class="hero-steps">
+        <li><strong>Discover</strong> — we profile your company from your website alone</li>
+        <li><strong>Approve</strong> — tick the sources worth monitoring</li>
+        <li><strong>Run</strong> — get a 0–100 Reputation Score, themes and urgent flags</li>
+      </ol>
+    </section>
+
+    <!-- Company profile -->
+    <section class="panel" id="profile-panel" hidden>
+      <h2 class="panel-title">Company profile</h2>
+      <div id="profile-body"></div>
+      <div class="confidence-note" id="confidence-note" hidden></div>
+    </section>
+
+    <!-- Watchlist -->
+    <section class="panel no-print" id="watchlist-panel" hidden>
+      <h2 class="panel-title">Recommended watchlist <span class="hint">— untick anything you don't want scraped</span></h2>
+      <div class="watchlist-grid" id="watchlist-grid"></div>
+      <div class="watchlist-actions">
+        <button type="button" class="btn btn-ghost" id="btn-watch-add-url">+ Add URL</button>
+        <button type="button" class="btn btn-primary" id="btn-run">Run Monitoring ▶</button>
+      </div>
+      <div class="error-box" id="run-error" hidden></div>
+    </section>
+
+    <!-- Progress -->
+    <section class="panel no-print" id="progress-panel" hidden>
+      <div class="spinner"></div>
+      <p id="progress-text">Working…</p>
+      <p class="micro">Fetching sources, parsing mentions with Gemini, then scoring.
+         This honestly takes a minute or two on free-tier keys — nothing is cached or faked.</p>
+    </section>
+
+    <!-- ============================ Results -->
+    <section id="results-panel" hidden>
+
+      <div class="results-toolbar no-print">
+        <h2>Results</h2>
+        <div>
+          <button type="button" class="btn btn-secondary" id="btn-pdf">Download PDF Report</button>
+          <button type="button" class="btn btn-secondary" id="btn-blueprint">Download Source Code Blueprint</button>
+        </div>
+      </div>
+
+      <div class="results-grid">
+        <div class="panel score-panel">
+          <h3 class="panel-title">Reputation Score</h3>
+          <div class="gauge-wrap">
+            <canvas id="gauge-chart"></canvas>
+            <div class="gauge-centre">
+              <span id="gauge-score">–</span>
+              <span id="gauge-band" class="band-label"></span>
+            </div>
+          </div>
+          <div class="low-data-badge" id="low-data-badge" hidden>⚠ Low data — sample too small to be reliable</div>
+          <p class="exec-summary" id="exec-summary"></p>
+        </div>
+
+        <div class="panel">
+          <h3 class="panel-title">Sentiment split</h3>
+          <canvas id="sentiment-chart"></canvas>
+        </div>
+
+        <div class="panel">
+          <h3 class="panel-title">Mentions by platform</h3>
+          <canvas id="platform-chart"></canvas>
+        </div>
+      </div>
+
+      <div class="themes-grid">
+        <div class="panel">
+          <h3 class="panel-title">Top complaint themes</h3>
+          <div id="complaint-themes" class="theme-cards"></div>
+        </div>
+        <div class="panel">
+          <h3 class="panel-title">Top praise themes</h3>
+          <div id="praise-themes" class="theme-cards"></div>
+        </div>
+      </div>
+
+      <div class="themes-grid">
+        <div class="panel">
+          <h3 class="panel-title">Urgent flags</h3>
+          <ul id="urgent-flags" class="signal-list flags"></ul>
+        </div>
+        <div class="panel">
+          <h3 class="panel-title">Quick wins</h3>
+          <ul id="quick-wins" class="signal-list wins"></ul>
+        </div>
+      </div>
+
+      <div class="panel" id="extra-notes-panel" hidden>
+        <h3 class="panel-title">Other signals</h3>
+        <div id="extra-notes"></div>
+      </div>
+
+      <div class="panel">
+        <h3 class="panel-title">Live mentions feed</h3>
+        <div class="mentions-scroll">
+          <table class="mentions-table">
+            <thead><tr><th>Platform</th><th>Mention</th><th>Sentiment</th><th>Tag</th><th class="no-print"></th></tr></thead>
+            <tbody id="mentions-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3 class="panel-title">Source fetch status</h3>
+        <div id="source-status" class="status-list"></div>
+        <div id="parse-failures" class="micro" hidden></div>
+      </div>
+
+      <!-- Print-only branded footer: fill these placeholders in before sharing -->
+      <div class="print-only report-footer">
+        <hr>
+        <p><strong>[[ YOUR COMPANY NAME — edit in templates/index.html ]]</strong>
+           · [[ YOUR WEBSITE URL ]] · Report generated by Brand Watch</p>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- ============================ Lead gate modal -->
+<div class="modal-overlay no-print" id="gate-modal" hidden>
+  <div class="modal">
+    <h2 id="gate-title">Unlock unlimited runs &amp; downloads</h2>
+    <p id="gate-copy">You've used your 2 free analysis runs. Tell us who you are and we'll unlock
+       unlimited monitoring, the PDF report and the full source-code blueprint — free.</p>
+    <label>Name <input type="text" id="gate-name" autocomplete="name"></label>
+    <label>Business email <input type="email" id="gate-email" autocomplete="email"></label>
+    <label>Company name <input type="text" id="gate-company" autocomplete="organization"></label>
+    <div class="warn-box" id="gate-warn" hidden></div>
+    <div class="error-box" id="gate-error" hidden></div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" id="gate-cancel">Not now</button>
+      <button type="button" class="btn btn-primary" id="gate-submit">Unlock free access</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
