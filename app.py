@@ -722,6 +722,7 @@ BLUEPRINT_FILES = [
     "templates/index.html",
     "static/app.js",
     "static/style.css",
+    "static/vendor/chart.umd.min.js",
     "skills/brand-discovery/SKILL.md",
     "skills/universal-parser/SKILL.md",
     "skills/sentiment-calibration/SKILL.md",

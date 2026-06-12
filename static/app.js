@@ -246,7 +246,7 @@
       renderResults(data);
     } catch (e) {
       backToWatchlist();
-      showError(errBox, "The run failed with a network error: " + e.message);
+      showError(errBox, "The run failed: " + e.message);
     } finally {
       $("progress-panel").hidden = true;
       refreshCredits();
@@ -332,9 +332,14 @@
   }
 
   function makeChart(id, config) {
-    if (state.charts[id]) state.charts[id].destroy();
-    config.options = Object.assign({ animation: false, responsive: true }, config.options || {});
-    state.charts[id] = new Chart($(id), config);
+    try {
+      if (state.charts[id]) state.charts[id].destroy();
+      config.options = Object.assign({ animation: false, responsive: true }, config.options || {});
+      state.charts[id] = new Chart($(id), config);
+    } catch (e) {
+      // A chart failing must never block the rest of the results render.
+      console.warn("Chart render failed for #" + id + ":", e);
+    }
   }
 
   function drawGauge(value) {

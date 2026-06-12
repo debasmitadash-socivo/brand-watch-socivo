@@ -17,6 +17,10 @@
 
 * { box-sizing: border-box; }
 
+/* Keep the hidden attribute authoritative even where display is set (e.g. the
+   flex modal overlay, which would otherwise invisibly block all clicks). */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
