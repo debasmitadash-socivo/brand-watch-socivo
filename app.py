@@ -719,6 +719,8 @@ async def credits(request: Request):
 BLUEPRINT_FILES = [
     "app.py",
     "requirements.txt",
+    "render.yaml",
+    "Procfile",
     "templates/index.html",
     "static/app.js",
     "static/style.css",

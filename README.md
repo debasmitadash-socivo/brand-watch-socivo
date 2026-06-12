@@ -38,7 +38,7 @@ python app.py                # or: uvicorn app:app --reload
 ```
 
 Open http://localhost:8000. You need nothing else — keys are pasted into the
-dashboard sidebar by each user:
+dashboard Settings panel by each user:
 
 - Gemini key: https://aistudio.google.com/apikey (free)
 - Reddit: https://www.reddit.com/prefs/apps → "create another app" → type
@@ -57,15 +57,20 @@ dashboard sidebar by each user:
 
 ## Deploy on a free tier (Render / Railway)
 
-**Render:** New → Web Service → connect this repo → Build command
-`pip install -r requirements.txt` → Start command
-`uvicorn app:app --host 0.0.0.0 --port $PORT` → add the `EXPORT_PASSWORD`
-environment variable. The free instance sleeps when idle, which is fine for a
-lead magnet.
+**Render (one click):** this repo ships a `render.yaml` blueprint, so go to
+https://dashboard.render.com/blueprints → **New Blueprint Instance** → connect
+this GitHub repo and pick the branch → Render reads `render.yaml` and builds
+everything itself. It will prompt you once for `EXPORT_PASSWORD` (the password
+that protects your leads CSV at `/export`) — choose anything. The free
+instance sleeps when idle, which is fine for a lead magnet; it wakes on the
+first visit.
 
-**Railway:** New Project → Deploy from repo → it autodetects Python; set the
-start command to `uvicorn app:app --host 0.0.0.0 --port $PORT` and add
-`EXPORT_PASSWORD` under Variables.
+**Railway:** New Project → Deploy from GitHub repo → it autodetects Python and
+uses the `Procfile`; add `EXPORT_PASSWORD` under Variables → Settings →
+Networking → Generate Domain.
+
+After deploying, open the public URL, click **Settings** in the top bar, paste
+a Gemini key, and run the 10-step test script below against the live site.
 
 Note: SQLite lives on the instance disk. On Render's free tier the disk is
 ephemeral, so download your leads CSV regularly (or attach a persistent disk /
@@ -73,8 +78,8 @@ move to a managed DB when volume justifies it).
 
 ## Where to change branding
 
-- **App name and tagline:** `templates/index.html` — the `<title>` tag and the
-  `.brand-block` section at the top of the sidebar.
+- **App name, headline and tagline:** `templates/index.html` — the `<title>`
+  tag, the `.logo` in the top bar, and the hero section copy.
 - **PDF report footer:** `templates/index.html` — search for
   `[[ YOUR COMPANY NAME` inside the `report-footer` div and replace both
   placeholders with your company name and URL.
@@ -105,10 +110,12 @@ parsing works. Run it after any code change before deploying.
 Use a fresh browser profile (or clear cookies for the site) so credits start
 at 2. Have a Gemini key ready; Reddit credentials optional.
 
-1. **Discovery** — paste your Gemini key and a real company website URL in the
-   sidebar, click **Discover my brand →**. Expect a company profile panel
-   (brand, industry, aliases…) and a watchlist of max 8 source cards with
-   priority badges. Sidebar badge reads "Free analysis runs remaining: 2 of 2".
+1. **Discovery** — click **Analyse my brand →** with no key set: the Settings
+   modal opens with a "required" error on the Gemini field. Paste your key,
+   save, enter a real company website URL in the hero bar and click
+   **Analyse my brand →** again. Expect a company profile panel (brand,
+   industry, aliases…) and a watchlist of max 8 source cards with priority
+   badges. The top-bar badge reads "Free analysis runs remaining: 2 of 2".
 2. **Watchlist editing** — untick one recommended card; click **+ Add URL** and
    add your Trustpilot or G2 profile URL. The custom card appears ticked.
 3. **Run 1** — click **Run Monitoring ▶**. Expect the progress panel, then
@@ -131,7 +138,7 @@ at 2. Have a Gemini key ready; Reddit credentials optional.
    app.py, skills/, templates/, static/, `.env.example` — and grep it to
    confirm **no API keys and no leads.db** inside.
 9. **PDF report** — click **Download PDF Report**; the browser print dialogue
-   opens. The preview hides the sidebar/buttons/inputs and shows the report
+   opens. The preview hides the app chrome, buttons and inputs and shows the report
    header, score, charts, themes, executive summary, a mentions sample and
    the branded footer placeholders. Save as PDF.
 10. **CSV export** — restart the app with `EXPORT_PASSWORD=secret python app.py`,

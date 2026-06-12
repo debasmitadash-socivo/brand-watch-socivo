@@ -30,7 +30,7 @@ That's it. The assistant will do the rest and tell you when the app is running
    **script**, set the redirect URI to `http://localhost:8000`, and note the
    **Client ID** (under the app name) and **Client Secret**.
 
-Paste these into the sidebar of the dashboard. They stay in your browser's
+Paste these into the Settings panel (top-right gear button) of the dashboard. They stay in your browser's
 local storage and are sent only with each request — never saved on the server.
 
 Alternatively, copy `.env.example` to `.env`, fill in the values, and export

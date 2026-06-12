@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: brand-watch
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: EXPORT_PASSWORD
+        sync: false   # set this in the Render dashboard; protects /export (leads CSV)
+      - key: PYTHON_VERSION
+        value: 3.11.9

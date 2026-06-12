@@ -91,6 +91,39 @@
     }
   }
 
+  /* --------------------------------------------------------- settings */
+
+  function openSettings(showGeminiError = false) {
+    geminiFieldError(showGeminiError);
+    $("settings-modal").hidden = false;
+    if (showGeminiError) $("cfg-gemini").focus();
+  }
+
+  function geminiFieldError(show) {
+    $("gemini-error").hidden = !show;
+    $("cfg-gemini").classList.toggle("input-error", show);
+  }
+
+  function saveSettings() {
+    // Optional fields are simply disregarded when blank; Gemini is required.
+    if (!$("cfg-gemini").value.trim()) {
+      geminiFieldError(true);
+      $("cfg-gemini").focus();
+      return;
+    }
+    geminiFieldError(false);
+    for (const [id, key] of Object.entries(CFG_FIELDS)) {
+      localStorage.setItem(key, $(id).value.trim());
+    }
+    $("settings-modal").hidden = true;
+  }
+
+  function requireGeminiKey() {
+    if ($("cfg-gemini").value.trim()) return true;
+    openSettings(true);
+    return false;
+  }
+
   /* ------------------------------------------------------- discovery */
 
   async function discover() {
@@ -99,9 +132,7 @@
     errBox.hidden = true;
     const website = $("cfg-website").value.trim();
     if (!website) return showError(errBox, "Enter your company website URL first.");
-    if (!$("cfg-gemini").value.trim())
-      return showError(errBox,
-        'A Gemini API key is required. <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Get a free key here</a>.');
+    if (!requireGeminiKey()) return;
 
     btn.disabled = true;
     btn.textContent = "Reading your website…";
@@ -137,7 +168,7 @@
       showError(errBox, "Network error talking to the backend: " + e.message);
     } finally {
       btn.disabled = false;
-      btn.textContent = "Discover my brand →";
+      btn.textContent = "Analyse my brand →";
     }
   }
 
@@ -208,13 +239,14 @@
   async function runMonitoring() {
     const errBox = $("run-error");
     errBox.hidden = true;
+    if (!requireGeminiKey()) return;
     const creditsInfo = await refreshCredits();
     if (!creditsInfo.unlocked && creditsInfo.remaining <= 0) {
       openGate("run");
       return;
     }
 
-    // Merge sidebar custom URLs into the approved source list.
+    // Merge the standing custom URLs from Settings into the approved source list.
     const sources = state.watchlist.filter((w) => w.enabled)
       .map((w) => ({ platform: w.platform, url: w.url }));
     for (const url of customUrls()) {
@@ -260,7 +292,7 @@
 
   /* --------------------------------------------------------- results */
 
-  const SENT_COLOURS = { positive: "#1d9a6c", neutral: "#9aa7b8", negative: "#d93a3a" };
+  const SENT_COLOURS = { positive: "#34d399", neutral: "#64748b", negative: "#f87171" };
 
   function countable(m) {
     return m.relevance !== "excluded" && !m.self_published;
@@ -275,7 +307,7 @@
 
     // Gauge
     const value = clampScore(score.score);
-    $("gauge-score").textContent = value === null ? "–" : Math.round(value);
+    animateScore(value);
     $("gauge-band").textContent = score.band || (value === null ? "No data" : bandFor(value));
     $("low-data-badge").hidden = !score.low_data;
     $("exec-summary").textContent = score.executive_summary || (mentions.length
@@ -310,6 +342,20 @@
     $("results-panel").scrollIntoView({ behavior: "smooth" });
   }
 
+  function animateScore(value) {
+    const el = $("gauge-score");
+    if (value === null) { el.textContent = "–"; return; }
+    const target = Math.round(value);
+    const start = performance.now();
+    const duration = 900;
+    (function tick(now) {
+      const t = Math.min(1, (now - start) / duration);
+      const eased = 1 - Math.pow(1 - t, 3);
+      el.textContent = Math.round(target * eased);
+      if (t < 1) requestAnimationFrame(tick);
+    })(start);
+  }
+
   function clampScore(v) {
     const n = Number(v);
     return Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : null;
@@ -324,11 +370,11 @@
   }
 
   function gaugeColour(s) {
-    if (s === null) return "#9aa7b8";
-    if (s < 40) return "#d93a3a";
-    if (s < 60) return "#d97f0e";
-    if (s < 75) return "#2f6fed";
-    return "#1d9a6c";
+    if (s === null) return "#5d6c85";
+    if (s < 40) return "#f87171";
+    if (s < 60) return "#fbbf24";
+    if (s < 75) return "#818cf8";
+    return "#34d399";
   }
 
   function makeChart(id, config) {
@@ -349,7 +395,7 @@
       data: {
         datasets: [{
           data: [v, 100 - v],
-          backgroundColor: [gaugeColour(value), "#e3e8ef"],
+          backgroundColor: [gaugeColour(value), "rgba(148, 163, 184, 0.16)"],
           borderWidth: 0,
         }],
       },
@@ -381,7 +427,7 @@
       type: "bar",
       data: {
         labels,
-        datasets: [{ data: labels.map((l) => counts[l]), backgroundColor: "#2f6fed", borderRadius: 5 }],
+        datasets: [{ data: labels.map((l) => counts[l]), backgroundColor: "#818cf8", borderRadius: 5 }],
       },
       options: {
         indexAxis: "y",
@@ -577,8 +623,23 @@
 
   /* ------------------------------------------------------------ init */
 
+  if (window.Chart) {
+    Chart.defaults.color = "#93a3bc";
+    Chart.defaults.borderColor = "rgba(148, 163, 184, 0.14)";
+    Chart.defaults.font.family = '"Inter", "Segoe UI", system-ui, sans-serif';
+  }
+
   loadConfig();
   refreshCredits();
+  $("btn-settings").addEventListener("click", () => openSettings());
+  $("settings-close").addEventListener("click", () => { $("settings-modal").hidden = true; });
+  $("settings-save").addEventListener("click", saveSettings);
+  $("cfg-gemini").addEventListener("input", () => {
+    if ($("cfg-gemini").value.trim()) geminiFieldError(false);
+  });
+  $("settings-modal").addEventListener("click", (e) => {
+    if (e.target === $("settings-modal")) $("settings-modal").hidden = true;
+  });
   $("btn-add-url").addEventListener("click", () => addCustomUrlRow());
   $("btn-discover").addEventListener("click", discover);
   $("btn-watch-add-url").addEventListener("click", addWatchlistUrl);
