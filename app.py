@@ -41,10 +41,9 @@ SKILLS_DIR = BASE_DIR / "skills"
 DB_PATH = BASE_DIR / "leads.db"
 
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
-GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    f"{GEMINI_MODEL}:generateContent"
-)
+GEMINI_API_BASE = os.environ.get("GEMINI_API_BASE",
+                                 "https://generativelanguage.googleapis.com")
+GEMINI_URL = f"{GEMINI_API_BASE}/v1beta/models/{GEMINI_MODEL}:generateContent"
 GEMINI_KEY_URL = "https://aistudio.google.com/apikey"
 
 FREE_RUNS = 2

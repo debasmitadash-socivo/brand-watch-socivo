@@ -88,6 +88,18 @@ Set `EXPORT_PASSWORD`, then visit `https://your-app/export` — log in with
 username `admin` and that password to download `brand-watch-leads.csv`
 (id, name, business_email, company_name, monitored_brand, created_at).
 
+## Automated funnel check (no API quota needed)
+
+```bash
+python scripts/mock_e2e.py
+```
+
+Spins up a mocked Gemini API plus fake review pages and drives the whole
+funnel — discovery, two runs, the credit gate, lead capture, unlocked runs,
+the blueprint zip and the CSV export — printing PASS/FAIL per check. It also
+deliberately feeds the app fenced and malformed JSON to prove the defensive
+parsing works. Run it after any code change before deploying.
+
 ## 10-step manual test script (full funnel)
 
 Use a fresh browser profile (or clear cookies for the site) so credits start
