@@ -25,10 +25,28 @@ leads.db                    SQLite, created automatically (gitignored)
 ```
 
 Pipeline: **discover** (`/api/discover`, brand-discovery skill) → user approves
-watchlist → **run** (`/api/run`): concurrent ingestion (Reddit OAuth +
-DuckDuckGo/Bing search-engine bypass for X + direct URL fetches) → parsing
+watchlist → **run** (`/api/run`): concurrent ingestion → parsing
 (universal-parser + sentiment-calibration skills, 30k-char chunks, defensive
 JSON handling with one retry) → scoring (reputation-scoring skill).
+
+### Data sources (all run automatically, no customer keys required)
+
+Tuned for B2B SaaS / tech brands, where reputation lives in technical
+communities and press rather than consumer review sites:
+
+| Source | Auth | Notes |
+|---|---|---|
+| **Hacker News** (Algolia API) | none | Stories + comments; the richest free SaaS/devtools signal |
+| **Reddit** (public `.json`) | none | r/SaaS etc.; OAuth creds optional, only raise limits + add comments |
+| **Google News** (RSS) | none | Funding/launch/outage press coverage |
+| **Web/X search** (DuckDuckGo) | none | Catches X, blogs, podcasts via `site:` queries |
+| Custom/recommended review URLs | none | Best-effort; G2/Trustpilot often 403 (bot protection) — see below |
+
+The only key a customer ever pastes is their Gemini key. Review sites like
+G2/Trustpilot/Glassdoor block free server-side scraping; to include them
+reliably you'd add a paid scraping proxy or headless-browser service (a
+future `SCRAPER_PROXY` hook). LinkedIn has no free/legitimate content API, so
+B2B reputation is captured via HN/Reddit/News/search instead.
 
 ## Run locally
 

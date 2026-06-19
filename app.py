@@ -24,6 +24,7 @@ import random
 import re
 import sqlite3
 import time
+import xml.etree.ElementTree as ET
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -603,7 +604,122 @@ async def reddit_dump(client: httpx.AsyncClient, creds: dict, profile: dict) -> 
     return "\n\n".join(parts)
 
 
-# ---------------------------------------------------------------- pipeline
+# ----------------------------------- credential-free sources (B2B / tech)
+
+def brand_terms(profile: dict, limit: int = 3) -> list[str]:
+    """Brand name plus its strongest aliases, for searching."""
+    terms = [profile.get("brand_name") or ""]
+    for alias in (profile.get("aliases_and_misspellings") or [])[:limit]:
+        terms.append(str(alias))
+    return [t for t in dict.fromkeys(t.strip() for t in terms) if t]
+
+
+async def reddit_public_dump(client: httpx.AsyncClient, profile: dict) -> str:
+    """Reddit search via the PUBLIC .json endpoint — no OAuth, no credentials.
+
+    Rate-limited when unauthenticated, so we keep it light and space requests.
+    Used automatically; the OAuth path (richer, with comments) is an optional
+    upgrade if the user supplies their own app credentials.
+    """
+    headers = {"User-Agent": "web:brand-watch-monitor:v1.0 (public read)"}
+    parts, seen = [], set()
+    for term in brand_terms(profile):
+        resp = await client.get(
+            "https://www.reddit.com/search.json",
+            params={"q": f'"{term}"', "limit": 25, "sort": "relevance", "t": "year"},
+            headers=headers, timeout=FETCH_TIMEOUT, follow_redirects=True,
+        )
+        if resp.status_code == 429:
+            raise RuntimeError("Reddit rate-limited the public endpoint (429). "
+                               "Add Reddit API credentials in Settings for higher limits.")
+        resp.raise_for_status()
+        for child in resp.json().get("data", {}).get("children", []):
+            post = child.get("data", {})
+            pid = post.get("id")
+            if not pid or pid in seen:
+                continue
+            seen.add(pid)
+            created = post.get("created_utc")
+            when = (datetime.fromtimestamp(created, tz=timezone.utc).date().isoformat()
+                    if created else "unknown")
+            parts.append(
+                f"REDDIT POST in r/{post.get('subreddit')}\n"
+                f"AUTHOR: u/{post.get('author')}\nDATE: {when}\n"
+                f"URL: https://www.reddit.com{post.get('permalink') or ''}\n"
+                f"TITLE: {post.get('title')}\n"
+                f"BODY: {(post.get('selftext') or '')[:1500]}"
+            )
+        await asyncio.sleep(random.uniform(1.0, 2.0))
+    return "\n\n".join(parts)
+
+
+async def hackernews_dump(client: httpx.AsyncClient, profile: dict) -> str:
+    """Hacker News via the free Algolia API — no key, no auth. The richest
+    free signal for SaaS / developer-tool / tech-company reputation."""
+    parts, seen = [], set()
+    for term in brand_terms(profile, limit=2):
+        for tag in ("story", "comment"):
+            resp = await client.get(
+                "https://hn.algolia.com/api/v1/search",
+                params={"query": term, "tags": tag, "hitsPerPage": 25},
+                headers={"User-Agent": BROWSER_UA}, timeout=FETCH_TIMEOUT,
+            )
+            resp.raise_for_status()
+            for hit in resp.json().get("hits", []):
+                oid = hit.get("objectID")
+                if not oid or oid in seen:
+                    continue
+                seen.add(oid)
+                raw = hit.get("comment_text") or hit.get("story_text") or hit.get("title") or ""
+                text = html_to_text(raw) if "<" in raw else raw
+                if not text.strip():
+                    continue
+                created = hit.get("created_at_i")
+                when = (datetime.fromtimestamp(created, tz=timezone.utc).date().isoformat()
+                        if created else (hit.get("created_at") or "unknown"))
+                parts.append(
+                    f"HACKER NEWS {tag.upper()}\n"
+                    f"AUTHOR: {hit.get('author')}\nDATE: {when}\n"
+                    f"POINTS: {hit.get('points')}  COMMENTS: {hit.get('num_comments')}\n"
+                    f"URL: https://news.ycombinator.com/item?id={oid}\n"
+                    f"TEXT: {text[:1500]}"
+                )
+        await asyncio.sleep(random.uniform(0.4, 0.9))
+    return "\n\n".join(parts)
+
+
+async def news_rss_dump(client: httpx.AsyncClient, profile: dict) -> str:
+    """Google News RSS — free, no key. Press/funding/launch mentions, which
+    are a strong B2B reputation signal."""
+    parts, seen = [], set()
+    for term in brand_terms(profile, limit=1):
+        resp = await client.get(
+            "https://news.google.com/rss/search",
+            params={"q": f'"{term}"', "hl": "en-US", "gl": "US", "ceid": "US:en"},
+            headers={"User-Agent": BROWSER_UA}, timeout=FETCH_TIMEOUT,
+            follow_redirects=True,
+        )
+        resp.raise_for_status()
+        try:
+            root = ET.fromstring(resp.content)
+        except ET.ParseError:
+            continue
+        for item in root.iter("item"):
+            title = (item.findtext("title") or "").strip()
+            link = (item.findtext("link") or "").strip()
+            if not title or link in seen:
+                continue
+            seen.add(link)
+            pub = (item.findtext("pubDate") or "").strip()
+            source_el = item.find("source")
+            source = source_el.text.strip() if source_el is not None and source_el.text else ""
+            desc = html_to_text(item.findtext("description") or "")
+            parts.append(
+                f"NEWS ARTICLE (Google News)\n"
+                f"SOURCE: {source}\nDATE: {pub}\nURL: {link}\n"
+                f"HEADLINE: {title}\nSUMMARY: {desc[:600]}"
+            )
+    return "\n\n".join(parts)
 
 def chunk_text(text: str, size: int = CHUNK_SIZE) -> list[str]:
     text = text[:MAX_DUMP_CHARS]
@@ -753,20 +869,48 @@ async def run_monitoring(request: Request):
 
         # ---- Step 3: ingestion (concurrent; one failure never kills the run)
         async def ingest_reddit():
-            label = "Reddit (user OAuth)"
-            if not (reddit_creds["client_id"] and reddit_creds["client_secret"]):
-                statuses.append({"source": label, "status": "skipped",
-                                 "detail": "No Reddit credentials supplied — relying on search-engine queries instead."})
-                return
+            has_oauth = bool(reddit_creds["client_id"] and reddit_creds["client_secret"])
+            label = "Reddit (user OAuth)" if has_oauth else "Reddit (public, no key)"
             try:
-                text = await reddit_dump(client, reddit_creds, profile)
+                if has_oauth:
+                    text = await reddit_dump(client, reddit_creds, profile)
+                else:
+                    text = await reddit_public_dump(client, profile)
                 if text:
                     dumps.append({"source": label, "platform": "Reddit",
                                   "link": "https://www.reddit.com", "text": text})
                     statuses.append({"source": label, "status": "ok", "chars": len(text)})
                 else:
                     statuses.append({"source": label, "status": "empty",
-                                     "detail": "0 results from Reddit search."})
+                                     "detail": "0 Reddit results for the brand and its aliases."})
+            except Exception as exc:
+                statuses.append({"source": label, "status": "error", "detail": str(exc)[:200]})
+
+        async def ingest_hackernews():
+            label = "Hacker News (no key)"
+            try:
+                text = await hackernews_dump(client, profile)
+                if text:
+                    dumps.append({"source": label, "platform": "Hacker News",
+                                  "link": "https://news.ycombinator.com", "text": text})
+                    statuses.append({"source": label, "status": "ok", "chars": len(text)})
+                else:
+                    statuses.append({"source": label, "status": "empty",
+                                     "detail": "No Hacker News mentions (common for non-tech or smaller brands)."})
+            except Exception as exc:
+                statuses.append({"source": label, "status": "error", "detail": str(exc)[:200]})
+
+        async def ingest_news():
+            label = "Google News (no key)"
+            try:
+                text = await news_rss_dump(client, profile)
+                if text:
+                    dumps.append({"source": label, "platform": "News",
+                                  "link": "https://news.google.com", "text": text})
+                    statuses.append({"source": label, "status": "ok", "chars": len(text)})
+                else:
+                    statuses.append({"source": label, "status": "empty",
+                                     "detail": "No recent news coverage found."})
             except Exception as exc:
                 statuses.append({"source": label, "status": "error", "detail": str(exc)[:200]})
 
@@ -813,6 +957,8 @@ async def run_monitoring(request: Request):
 
         await asyncio.gather(
             ingest_reddit(),
+            ingest_hackernews(),
+            ingest_news(),
             ingest_searches(),
             *(ingest_url(s) for s in sources),
         )

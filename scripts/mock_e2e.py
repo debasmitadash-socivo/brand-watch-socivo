@@ -207,8 +207,10 @@ def main() -> int:
             check("score produced", (result.get("score") or {}).get("score") == 62)
             check("source status reported ok",
                   any(s["status"] == "ok" for s in result["source_status"]))
-            check("reddit skip is reported",
-                  any(s["status"] == "skipped" for s in result["source_status"]))
+            sources_seen = " ".join(s["source"] for s in result["source_status"]).lower()
+            check("credential-free standing sources are attempted",
+                  all(k in sources_seen for k in ("reddit", "hacker news", "google news")),
+                  sources_seen)
 
             print("Step 4 — run 2, then the gate")
             check("run 2 returns 200",
