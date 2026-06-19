@@ -721,6 +721,81 @@ async def news_rss_dump(client: httpx.AsyncClient, profile: dict) -> str:
             )
     return "\n\n".join(parts)
 
+
+async def stackexchange_dump(client: httpx.AsyncClient, profile: dict) -> str:
+    """Stack Overflow / Stack Exchange via the free API — no key needed.
+    Q&A that mentions a tool is high-signal sentiment for developer products."""
+    parts, seen = [], set()
+    for term in brand_terms(profile, limit=1):
+        resp = await client.get(
+            "https://api.stackexchange.com/2.3/search/excerpts",
+            params={"order": "desc", "sort": "relevance", "q": term,
+                    "site": "stackoverflow", "pagesize": 25},
+            headers={"User-Agent": BROWSER_UA}, timeout=FETCH_TIMEOUT,
+        )
+        resp.raise_for_status()
+        for it in resp.json().get("items", []):
+            qid = it.get("question_id")
+            if not qid or qid in seen:
+                continue
+            seen.add(qid)
+            created = it.get("creation_date")
+            when = (datetime.fromtimestamp(created, tz=timezone.utc).date().isoformat()
+                    if created else "unknown")
+            body = html_to_text(it.get("excerpt") or "")
+            parts.append(
+                f"STACK OVERFLOW {it.get('item_type', 'post')}\n"
+                f"DATE: {when}\nURL: https://stackoverflow.com/q/{qid}\n"
+                f"TITLE: {html_to_text(it.get('title') or '')}\nTEXT: {body[:1200]}"
+            )
+        await asyncio.sleep(random.uniform(0.3, 0.7))
+    return "\n\n".join(parts)
+
+
+async def github_dump(client: httpx.AsyncClient, profile: dict) -> str:
+    """GitHub issues/discussions mentioning the brand — free, no token (low
+    unauthenticated rate limit, but we make few calls). Strong for devtools."""
+    parts, seen = [], set()
+    for term in brand_terms(profile, limit=1):
+        resp = await client.get(
+            "https://api.github.com/search/issues",
+            params={"q": f'"{term}" in:title,body', "per_page": 20, "sort": "updated"},
+            headers={"User-Agent": BROWSER_UA, "Accept": "application/vnd.github+json"},
+            timeout=FETCH_TIMEOUT,
+        )
+        if resp.status_code == 403:
+            raise RuntimeError("GitHub rate-limited the unauthenticated search (403).")
+        resp.raise_for_status()
+        for it in resp.json().get("items", []):
+            url = it.get("html_url")
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            body = (it.get("body") or "")[:1000]
+            parts.append(
+                f"GITHUB ISSUE/PR\nAUTHOR: {(it.get('user') or {}).get('login')}\n"
+                f"DATE: {it.get('created_at')}\nURL: {url}\n"
+                f"TITLE: {it.get('title')}\nBODY: {body}"
+            )
+    return "\n\n".join(parts)
+
+
+# Platforms with no API: reached via search-engine `site:` snippets. This also
+# recovers G2/Trustpilot/Capterra *review text* that we can't fetch directly
+# (403) but search engines have already indexed.
+B2B_SEARCH_SITES = [
+    "substack.com", "threads.net", "bsky.app", "medium.com",
+    "indiehackers.com", "g2.com", "trustradius.com", "capterra.com",
+]
+
+
+def b2b_search_queries(profile: dict) -> list[str]:
+    brand = (profile.get("brand_name") or "").strip()
+    if not brand:
+        return []
+    return [f'site:{domain} "{brand}"' for domain in B2B_SEARCH_SITES]
+
+
 def chunk_text(text: str, size: int = CHUNK_SIZE) -> list[str]:
     text = text[:MAX_DUMP_CHARS]
     chunks = []
@@ -914,14 +989,43 @@ async def run_monitoring(request: Request):
             except Exception as exc:
                 statuses.append({"source": label, "status": "error", "detail": str(exc)[:200]})
 
+        async def ingest_simple(label, platform, link, fn):
+            try:
+                text = await fn(client, profile)
+                if text:
+                    dumps.append({"source": label, "platform": platform, "link": link, "text": text})
+                    statuses.append({"source": label, "status": "ok", "chars": len(text)})
+                else:
+                    statuses.append({"source": label, "status": "empty",
+                                     "detail": f"No {platform} mentions found."})
+            except Exception as exc:
+                statuses.append({"source": label, "status": "error", "detail": str(exc)[:200]})
+
+        def platform_for_query(query: str) -> str:
+            site = re.search(r"site:([\w.]+)", query)
+            if site:
+                host = site.group(1).lower()
+                names = {
+                    "x.com": "X", "twitter.com": "X", "substack.com": "Substack",
+                    "threads.net": "Threads", "bsky.app": "Bluesky",
+                    "medium.com": "Medium", "indiehackers.com": "Indie Hackers",
+                    "g2.com": "G2", "trustradius.com": "TrustRadius",
+                    "capterra.com": "Capterra", "reddit.com": "Reddit",
+                }
+                return names.get(host, host)
+            return "Search"
+
         async def ingest_searches():
-            for query in search_queries[:8]:
+            # Discovery's queries + a standing B2B/tech site: set (Threads,
+            # Substack, Bluesky, Medium, Indie Hackers, and indexed G2/Capterra
+            # review snippets). Deduped and capped to respect Gemini quota.
+            queries = list(dict.fromkeys(search_queries + b2b_search_queries(profile)))[:12]
+            for query in queries:
                 label = f"Search: {query}"
                 try:
                     text = await search_engine_dump(client, query)
                     if text:
-                        platform = "X" if "x.com" in query or "twitter" in query.lower() else "Search"
-                        dumps.append({"source": label, "platform": platform,
+                        dumps.append({"source": label, "platform": platform_for_query(query),
                                       "link": "", "text": text})
                         statuses.append({"source": label, "status": "ok", "chars": len(text)})
                     else:
@@ -959,6 +1063,10 @@ async def run_monitoring(request: Request):
             ingest_reddit(),
             ingest_hackernews(),
             ingest_news(),
+            ingest_simple("Stack Overflow (no key)", "Stack Overflow",
+                          "https://stackoverflow.com", stackexchange_dump),
+            ingest_simple("GitHub (no key)", "GitHub",
+                          "https://github.com", github_dump),
             ingest_searches(),
             *(ingest_url(s) for s in sources),
         )

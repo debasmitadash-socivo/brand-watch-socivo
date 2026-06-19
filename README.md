@@ -39,14 +39,18 @@ communities and press rather than consumer review sites:
 | **Hacker News** (Algolia API) | none | Stories + comments; the richest free SaaS/devtools signal |
 | **Reddit** (public `.json`) | none | r/SaaS etc.; OAuth creds optional, only raise limits + add comments |
 | **Google News** (RSS) | none | Funding/launch/outage press coverage |
-| **Web/X search** (DuckDuckGo) | none | Catches X, blogs, podcasts via `site:` queries |
-| Custom/recommended review URLs | none | Best-effort; G2/Trustpilot often 403 (bot protection) — see below |
+| **Stack Overflow** (Stack Exchange API) | none | Q&A mentioning the tool — high-signal dev sentiment |
+| **GitHub** (search API) | none | Issues/discussions mentioning the brand (devtools) |
+| **B2B `site:` search** (DuckDuckGo) | none | Threads, Substack, Bluesky, Medium, Indie Hackers — and **indexed G2/TrustRadius/Capterra review snippets** that can't be fetched directly |
+| Custom/recommended review URLs | none | Best-effort direct fetch; G2/Trustpilot often 403 — the `site:` layer recovers their snippets instead |
 
-The only key a customer ever pastes is their Gemini key. Review sites like
-G2/Trustpilot/Glassdoor block free server-side scraping; to include them
-reliably you'd add a paid scraping proxy or headless-browser service (a
-future `SCRAPER_PROXY` hook). LinkedIn has no free/legitimate content API, so
-B2B reputation is captured via HN/Reddit/News/search instead.
+The only key a customer ever pastes is their Gemini key. We can't *fetch*
+G2/Trustpilot/Glassdoor pages (Cloudflare 403), but the `site:` search layer
+surfaces their indexed review text; for full-page reliability you'd add a paid
+scraping proxy (a future `SCRAPER_PROXY` hook). LinkedIn and the full X API
+have no free/legitimate access, so that reputation is captured via
+HN/Reddit/News/Stack Overflow/GitHub/search instead. Optional next-tier
+sources that need a free token: Product Hunt, YouTube, Bluesky's search API.
 
 ## Run locally
 
