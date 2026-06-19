@@ -392,10 +392,29 @@ def normalise_url(url: str) -> str:
     return url
 
 
+def browser_headers(extra: dict | None = None) -> dict:
+    """Realistic browser headers — many sites 403 requests that lack these."""
+    headers = {
+        "User-Agent": BROWSER_UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,"
+                  "image/webp,*/*;q=0.8",
+        "Accept-Language": "en-GB,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+        "Cache-Control": "max-age=0",
+    }
+    if extra:
+        headers.update(extra)
+    return headers
+
+
 async def fetch_page_text(client: httpx.AsyncClient, url: str) -> str:
     resp = await client.get(
-        url, headers={"User-Agent": BROWSER_UA, "Accept-Language": "en-GB,en;q=0.9"},
-        timeout=FETCH_TIMEOUT, follow_redirects=True,
+        url, headers=browser_headers(), timeout=FETCH_TIMEOUT, follow_redirects=True,
     )
     resp.raise_for_status()
     return html_to_text(resp.text)
@@ -403,30 +422,64 @@ async def fetch_page_text(client: httpx.AsyncClient, url: str) -> str:
 
 # ------------------------------------------------- search-engine bypass (X)
 
+def _decode_ddg_link(href: str) -> str:
+    if "uddg=" in href:
+        try:
+            return unquote(parse_qs(urlparse(href).query)["uddg"][0])
+        except (KeyError, IndexError):
+            pass
+    if href.startswith("//"):
+        return "https:" + href
+    return href
+
+
 async def ddg_search(client: httpx.AsyncClient, query: str) -> list[dict]:
-    resp = await client.get(
-        "https://html.duckduckgo.com/html/", params={"q": query},
-        headers={"User-Agent": BROWSER_UA, "Accept-Language": "en-GB,en;q=0.9"},
-        timeout=FETCH_TIMEOUT, follow_redirects=True,
+    """DuckDuckGo's no-JS endpoints. POST to /html/ works far more reliably
+    than GET; fall back to the even-lighter lite endpoint."""
+    headers = browser_headers({
+        "Origin": "https://html.duckduckgo.com",
+        "Referer": "https://html.duckduckgo.com/",
+        "Content-Type": "application/x-www-form-urlencoded",
+    })
+    results: list[dict] = []
+    try:
+        resp = await client.post(
+            "https://html.duckduckgo.com/html/", data={"q": query, "kl": "uk-en"},
+            headers=headers, timeout=FETCH_TIMEOUT, follow_redirects=True,
+        )
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for block in soup.select("div.result, div.web-result"):
+            anchor = block.select_one("a.result__a")
+            snippet = block.select_one(".result__snippet")
+            if not anchor:
+                continue
+            results.append({
+                "title": anchor.get_text(" ", strip=True),
+                "link": _decode_ddg_link(anchor.get("href", "")),
+                "snippet": snippet.get_text(" ", strip=True) if snippet else "",
+            })
+    except Exception:
+        results = []
+    if results:
+        return results
+
+    # Lite fallback — a bare table of links, even harder to block.
+    resp = await client.post(
+        "https://lite.duckduckgo.com/lite/", data={"q": query, "kl": "uk-en"},
+        headers=headers, timeout=FETCH_TIMEOUT, follow_redirects=True,
     )
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
-    results = []
-    for block in soup.select("div.result"):
-        anchor = block.select_one("a.result__a")
-        snippet = block.select_one(".result__snippet")
-        if not anchor:
-            continue
-        href = anchor.get("href", "")
-        if "uddg=" in href:
-            try:
-                href = unquote(parse_qs(urlparse(href).query)["uddg"][0])
-            except (KeyError, IndexError):
-                pass
+    for anchor in soup.select("a.result-link"):
+        link = _decode_ddg_link(anchor.get("href", ""))
+        snippet_td = anchor.find_parent("tr")
+        snippet = ""
+        if snippet_td and snippet_td.find_next_sibling("tr"):
+            snippet = snippet_td.find_next_sibling("tr").get_text(" ", strip=True)
         results.append({
             "title": anchor.get_text(" ", strip=True),
-            "link": href,
-            "snippet": snippet.get_text(" ", strip=True) if snippet else "",
+            "link": link, "snippet": snippet,
         })
     return results
 
@@ -434,7 +487,7 @@ async def ddg_search(client: httpx.AsyncClient, query: str) -> list[dict]:
 async def bing_search(client: httpx.AsyncClient, query: str) -> list[dict]:
     resp = await client.get(
         "https://www.bing.com/search", params={"q": query, "count": "20"},
-        headers={"User-Agent": BROWSER_UA, "Accept-Language": "en-GB,en;q=0.9"},
+        headers=browser_headers({"Referer": "https://www.bing.com/"}),
         timeout=FETCH_TIMEOUT, follow_redirects=True,
     )
     resp.raise_for_status()
