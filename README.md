@@ -41,16 +41,17 @@ communities and press rather than consumer review sites:
 | **Google News** (RSS) | none | Funding/launch/outage press coverage |
 | **Stack Overflow** (Stack Exchange API) | none | Q&A mentioning the tool — high-signal dev sentiment |
 | **GitHub** (search API) | none | Issues/discussions mentioning the brand (devtools) |
-| **B2B `site:` search** (DuckDuckGo) | none | Threads, Substack, Bluesky, Medium, Indie Hackers — and **indexed G2/TrustRadius/Capterra review snippets** that can't be fetched directly |
+| **Bluesky** (AT Protocol public API) | none | Real post text + engagement counts — growing fast as a tech/SaaS community |
+| **B2B `site:` search** (DuckDuckGo) | none | Substack, Threads, Medium, Indie Hackers, **Product Hunt**, **LinkedIn**, **YouTube** — and **indexed G2/TrustRadius/Capterra review snippets** that can't be fetched directly |
 | Custom/recommended review URLs | none | Best-effort direct fetch; G2/Trustpilot often 403 — the `site:` layer recovers their snippets instead |
 
 The only key a customer ever pastes is their Gemini key. We can't *fetch*
 G2/Trustpilot/Glassdoor pages (Cloudflare 403), but the `site:` search layer
 surfaces their indexed review text; for full-page reliability you'd add a paid
 scraping proxy (a future `SCRAPER_PROXY` hook). LinkedIn and the full X API
-have no free/legitimate access, so that reputation is captured via
-HN/Reddit/News/Stack Overflow/GitHub/search instead. Optional next-tier
-sources that need a free token: Product Hunt, YouTube, Bluesky's search API.
+have no free/legitimate access, so that reputation is captured via search
+engine indexing instead — LinkedIn posts and YouTube videos are indexed and
+their snippets surface through the `site:` layer.
 
 ## Run locally
 

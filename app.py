@@ -780,12 +780,61 @@ async def github_dump(client: httpx.AsyncClient, profile: dict) -> str:
     return "\n\n".join(parts)
 
 
+async def bluesky_dump(client: httpx.AsyncClient, profile: dict) -> str:
+    """Bluesky posts via the AT Protocol public search API — no key required.
+    Growing fast as a tech/SaaS community signal; direct API gives real text,
+    not just search-engine snippets."""
+    parts, seen = [], set()
+    for term in brand_terms(profile, limit=2):
+        try:
+            resp = await client.get(
+                "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts",
+                params={"q": f'"{term}"', "limit": 25, "sort": "top"},
+                headers={"User-Agent": BROWSER_UA},
+                timeout=FETCH_TIMEOUT,
+            )
+            if resp.status_code in (400, 422):
+                # Quoted query rejected — retry without quotes.
+                resp = await client.get(
+                    "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts",
+                    params={"q": term, "limit": 25, "sort": "top"},
+                    headers={"User-Agent": BROWSER_UA},
+                    timeout=FETCH_TIMEOUT,
+                )
+            resp.raise_for_status()
+            for post in resp.json().get("posts", []):
+                uri = post.get("uri", "")
+                if not uri or uri in seen:
+                    continue
+                seen.add(uri)
+                record = post.get("record", {})
+                text = (record.get("text") or "").strip()
+                if not text:
+                    continue
+                author = post.get("author", {})
+                handle = author.get("handle", "")
+                created_at = (record.get("createdAt") or post.get("indexedAt") or "")[:10]
+                rkey = uri.rsplit("/", 1)[-1] if "/" in uri else ""
+                url = f"https://bsky.app/profile/{handle}/post/{rkey}" if handle and rkey else ""
+                parts.append(
+                    f"BLUESKY POST\n"
+                    f"AUTHOR: @{handle}\nDATE: {created_at}\n"
+                    f"LIKES: {post.get('likeCount', 0)}  REPOSTS: {post.get('repostCount', 0)}\n"
+                    f"URL: {url}\nTEXT: {text[:1500]}"
+                )
+        except Exception:
+            pass
+        await asyncio.sleep(random.uniform(0.3, 0.7))
+    return "\n\n".join(parts)
+
+
 # Platforms with no API: reached via search-engine `site:` snippets. This also
 # recovers G2/Trustpilot/Capterra *review text* that we can't fetch directly
 # (403) but search engines have already indexed.
 B2B_SEARCH_SITES = [
-    "substack.com", "threads.net", "bsky.app", "medium.com",
+    "substack.com", "threads.net", "medium.com",
     "indiehackers.com", "g2.com", "trustradius.com", "capterra.com",
+    "producthunt.com", "linkedin.com", "youtube.com",
 ]
 
 
@@ -1011,6 +1060,8 @@ async def run_monitoring(request: Request):
                     "medium.com": "Medium", "indiehackers.com": "Indie Hackers",
                     "g2.com": "G2", "trustradius.com": "TrustRadius",
                     "capterra.com": "Capterra", "reddit.com": "Reddit",
+                    "producthunt.com": "Product Hunt", "linkedin.com": "LinkedIn",
+                    "youtube.com": "YouTube",
                 }
                 return names.get(host, host)
             return "Search"
@@ -1067,6 +1118,8 @@ async def run_monitoring(request: Request):
                           "https://stackoverflow.com", stackexchange_dump),
             ingest_simple("GitHub (no key)", "GitHub",
                           "https://github.com", github_dump),
+            ingest_simple("Bluesky (API, no key)", "Bluesky",
+                          "https://bsky.app", bluesky_dump),
             ingest_searches(),
             *(ingest_url(s) for s in sources),
         )
