@@ -40,7 +40,11 @@ python app.py                # or: uvicorn app:app --reload
 Open http://localhost:8000. You need nothing else — keys are pasted into the
 dashboard Settings panel by each user:
 
-- Gemini key: https://aistudio.google.com/apikey (free)
+- Gemini key(s): https://aistudio.google.com/apikey (free). **Tip:** add two or
+  more keys in Settings — the backend spreads calls across them and fails over
+  when one hits its free-tier rate/quota limit, so a single key running out no
+  longer stalls a run. The `GEMINI_API_KEY` env var also accepts a
+  comma-separated list of server-side default keys.
 - Reddit: https://www.reddit.com/prefs/apps → "create another app" → type
   **script** → use the Client ID + Secret + your username (optional; if left
   blank, Reddit coverage falls back to the search-engine queries)

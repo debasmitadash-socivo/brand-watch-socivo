@@ -19,6 +19,7 @@ import os
 import random
 import re
 import sqlite3
+import time
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -120,60 +121,165 @@ class GeminiError(Exception):
         self.message = message
 
 
-async def call_gemini(client: httpx.AsyncClient, api_key: str,
+# How long a key sits out after a 429 before we try it again, and how many
+# consecutive 429s mark it exhausted-for-this-run. The cooldown keeps a healthy
+# alternate key carrying the load while a limited key rests; the strike limit
+# means a genuinely spent key (e.g. daily quota gone) is retired quickly rather
+# than retried forever.
+RATE_LIMIT_COOLDOWN = 6.0       # seconds a 429'd key rests before a retry
+QUOTA_STRIKE_LIMIT = 3          # consecutive 429s on one key => drop it this run
+MAX_WAIT_SLEEP = 6.0            # cap on how long a call blocks waiting for a key
+
+
+class GeminiKeyPool:
+    """A rotating pool of user-supplied Gemini keys.
+
+    The free tier limits each key by requests-per-minute and requests-per-day.
+    A single analysis fires many calls, so one key alone often hits the limit
+    mid-run. The pool spreads calls across every key the user provides and,
+    when a key returns 429, parks it on a short cooldown and rotates to the
+    next — so the run keeps moving instead of stalling. Keys that are rejected
+    outright (bad key) or that keep returning 429 are dropped for the run.
+    """
+
+    def __init__(self, keys: list[str]):
+        # Preserve order, drop blanks and duplicates.
+        self.keys = list(dict.fromkeys(k.strip() for k in keys if k and k.strip()))
+        self._rr = 0
+        self._cooldown: dict[int, float] = {}   # idx -> monotonic time usable again
+        self._strikes: dict[int, int] = {}      # idx -> consecutive 429 count
+        self._dead: set[int] = set()             # idx -> permanently out this run
+        self._lock = asyncio.Lock()
+
+    def has_keys(self) -> bool:
+        return bool(self.keys)
+
+    async def acquire(self) -> tuple[str, int | None, str | float]:
+        """Pick a key to try now.
+
+        Returns ("key", idx, key) when one is ready, ("wait", None, seconds)
+        when all live keys are cooling down, or ("dead", None, 0) when every
+        key is exhausted/invalid.
+        """
+        async with self._lock:
+            now = time.monotonic()
+            live = [i for i in range(len(self.keys)) if i not in self._dead]
+            if not live:
+                return ("dead", None, 0)
+            ready = [i for i in live if self._cooldown.get(i, 0.0) <= now]
+            if ready:
+                idx = ready[self._rr % len(ready)]
+                self._rr += 1
+                return ("key", idx, self.keys[idx])
+            wait = min(self._cooldown[i] for i in live) - now
+            return ("wait", None, max(0.5, wait))
+
+    async def report_ok(self, idx: int):
+        async with self._lock:
+            self._strikes[idx] = 0
+
+    async def report_rate_limited(self, idx: int):
+        async with self._lock:
+            self._strikes[idx] = self._strikes.get(idx, 0) + 1
+            if self._strikes[idx] >= QUOTA_STRIKE_LIMIT:
+                # Looks like the daily quota, not a transient spike — retire it.
+                self._dead.add(idx)
+            else:
+                self._cooldown[idx] = time.monotonic() + RATE_LIMIT_COOLDOWN
+
+    async def report_transient(self, idx: int, seconds: float):
+        async with self._lock:
+            self._cooldown[idx] = time.monotonic() + seconds
+
+    async def report_invalid(self, idx: int):
+        async with self._lock:
+            self._dead.add(idx)
+
+    async def all_dead(self) -> bool:
+        async with self._lock:
+            return len(self._dead) >= len(self.keys)
+
+
+async def call_gemini(client: httpx.AsyncClient, pool: "GeminiKeyPool",
                       system_prompt: str, user_text: str) -> str:
-    if not api_key:
+    if not pool.has_keys():
         raise GeminiError(
             "missing_key",
             f"No Gemini API key supplied. Get a free key at {GEMINI_KEY_URL} "
-            "and paste it into the sidebar.",
+            "and paste it into Settings.",
         )
     payload = {
         "system_instruction": {"parts": [{"text": system_prompt}]},
         "contents": [{"role": "user", "parts": [{"text": user_text}]}],
         "generationConfig": {"temperature": 0.2, "maxOutputTokens": 8192},
     }
-    last_status = None
-    for attempt in range(3):
+    # Enough attempts to rotate through every key a few times and ride out
+    # short cooldowns, without looping forever on a dead pool.
+    max_attempts = max(6, len(pool.keys) * 4)
+    saw_rate_limit = False
+    for _ in range(max_attempts):
+        status, idx, val = await pool.acquire()
+        if status == "dead":
+            raise GeminiError(
+                "invalid_key",
+                "Every Gemini key supplied was rejected. Double-check them, or "
+                f"add a fresh free key at {GEMINI_KEY_URL}.",
+            )
+        if status == "wait":
+            saw_rate_limit = True
+            await asyncio.sleep(min(float(val), MAX_WAIT_SLEEP) + random.uniform(0, 1.0))
+            continue
+        key = str(val)
         try:
             resp = await client.post(
-                GEMINI_URL, params={"key": api_key}, json=payload,
+                GEMINI_URL, params={"key": key}, json=payload,
                 timeout=GEMINI_TIMEOUT,
             )
-        except httpx.HTTPError as exc:
-            raise GeminiError("network", f"Could not reach the Gemini API: {exc}")
-        last_status = resp.status_code
+        except httpx.HTTPError:
+            await pool.report_transient(idx, 3.0)
+            continue
         if resp.status_code == 429:
-            await asyncio.sleep(4 * (attempt + 1) + random.uniform(0, 2))
+            saw_rate_limit = True
+            await pool.report_rate_limited(idx)
             continue
         if resp.status_code in (400, 401, 403):
             body = resp.text[:500]
             if "API_KEY_INVALID" in body or "API key" in body or resp.status_code in (401, 403):
-                raise GeminiError(
-                    "invalid_key",
-                    "Your Gemini API key was rejected. Double-check it, or get "
-                    f"a free key at {GEMINI_KEY_URL}.",
-                )
+                await pool.report_invalid(idx)
+                continue
             raise GeminiError("bad_request", f"Gemini rejected the request: {body}")
         if resp.status_code >= 500:
-            await asyncio.sleep(2 * (attempt + 1))
+            await pool.report_transient(idx, 2.5)
             continue
         data = resp.json()
         try:
-            return data["candidates"][0]["content"]["parts"][0]["text"]
+            text = data["candidates"][0]["content"]["parts"][0]["text"]
         except (KeyError, IndexError, TypeError):
             block = (data.get("promptFeedback") or {}).get("blockReason")
             raise GeminiError(
                 "empty_response",
                 f"Gemini returned no usable text (block reason: {block or 'unknown'}).",
             )
-    if last_status == 429:
+        await pool.report_ok(idx)
+        return text
+
+    if await pool.all_dead():
+        raise GeminiError(
+            "invalid_key",
+            "Every Gemini key supplied was rejected or exhausted. Add a fresh "
+            f"free key at {GEMINI_KEY_URL}.",
+        )
+    if saw_rate_limit:
+        suffix = ("Add a second free key in Settings so the analysis can fail "
+                  "over between keys and avoid stalling."
+                  if len(pool.keys) < 2 else
+                  "Wait a minute for the per-minute limit to reset, then retry.")
         raise GeminiError(
             "quota",
-            "Your Gemini free-tier quota appears exhausted (HTTP 429). Wait a "
-            f"minute and retry, or check your quota at {GEMINI_KEY_URL}.",
+            "All supplied Gemini keys are rate-limited or over their free quota. "
+            + suffix,
         )
-    raise GeminiError("server", f"Gemini API kept failing (last status {last_status}).")
+    raise GeminiError("server", "Gemini API kept failing across all supplied keys.")
 
 
 def strip_fences(text: str) -> str:
@@ -201,9 +307,9 @@ def parse_json_payload(text: str):
     raise json.JSONDecodeError("no JSON object found", cleaned, 0)
 
 
-async def gemini_json(client, api_key, system_prompt, user_text):
+async def gemini_json(client, pool, system_prompt, user_text):
     """Call Gemini expecting JSON; on parse failure retry once with a correction."""
-    raw = await call_gemini(client, api_key, system_prompt, user_text)
+    raw = await call_gemini(client, pool, system_prompt, user_text)
     try:
         return parse_json_payload(raw)
     except json.JSONDecodeError:
@@ -213,7 +319,7 @@ async def gemini_json(client, api_key, system_prompt, user_text):
               "Respond again with strictly valid JSON only — no markdown fences, "
               "no commentary, no trailing text."
         )
-        raw = await call_gemini(client, api_key, system_prompt, correction)
+        raw = await call_gemini(client, pool, system_prompt, correction)
         return parse_json_payload(raw)
 
 
@@ -433,8 +539,22 @@ def normalise_mention(raw: dict, fallback_platform: str, fallback_link: str) -> 
     }
 
 
-def get_gemini_key(body: dict) -> str:
-    return (body.get("gemini_key") or os.environ.get("GEMINI_API_KEY", "")).strip()
+def get_gemini_keys(body: dict) -> list[str]:
+    """Collect every Gemini key the caller supplied, plus any server defaults.
+
+    Accepts `gemini_keys` (a list) and/or the legacy single `gemini_key`, and
+    the GEMINI_API_KEY env var (which may itself be comma-separated). Order is
+    preserved; the pool dedupes and drops blanks.
+    """
+    collected: list[str] = []
+    raw_list = body.get("gemini_keys")
+    if isinstance(raw_list, list):
+        collected.extend(str(k) for k in raw_list)
+    if body.get("gemini_key"):
+        collected.append(str(body["gemini_key"]))
+    env = os.environ.get("GEMINI_API_KEY", "")
+    collected.extend(env.split(","))
+    return [k.strip() for k in collected if k and k.strip()]
 
 
 def gate_state(request: Request) -> tuple[bool, int]:
@@ -456,7 +576,7 @@ async def index(request: Request):
 @app.post("/api/discover")
 async def discover(request: Request):
     body = await request.json()
-    gemini_key = get_gemini_key(body)
+    pool = GeminiKeyPool(get_gemini_keys(body))
     website = normalise_url(body.get("website_url", ""))
     industry_override = (body.get("industry") or "").strip()
     if not website:
@@ -486,7 +606,7 @@ async def discover(request: Request):
             + (f"\nABOUT PAGE TEXT DUMP:\n{about_text[:20000]}" if about_text else "")
         )
         try:
-            result = await gemini_json(client, gemini_key, load_skill("brand-discovery"), user_text)
+            result = await gemini_json(client, pool, load_skill("brand-discovery"), user_text)
         except GeminiError as exc:
             return JSONResponse({"error": exc.message, "code": exc.code}, status_code=502)
         except json.JSONDecodeError:
@@ -509,7 +629,7 @@ async def run_monitoring(request: Request):
         )
 
     body = await request.json()
-    gemini_key = get_gemini_key(body)
+    pool = GeminiKeyPool(get_gemini_keys(body))
     profile = body.get("profile") or {}
     search_queries = [q for q in (body.get("search_queries") or []) if isinstance(q, str) and q.strip()]
     sources = body.get("sources") or []
@@ -596,7 +716,9 @@ async def run_monitoring(request: Request):
 
         # ---- Step 4: parsing (universal-parser + sentiment-calibration)
         parser_prompt = build_parser_prompt(profile)
-        gemini_sem = asyncio.Semaphore(3)
+        # Allow a little more in-flight parsing when several keys are available,
+        # so the run actually benefits from the extra per-minute headroom.
+        gemini_sem = asyncio.Semaphore(min(6, 2 + len(pool.keys)))
         mentions: list[dict] = []
         parse_failures: list[str] = []
 
@@ -608,7 +730,7 @@ async def run_monitoring(request: Request):
             )
             async with gemini_sem:
                 try:
-                    parsed = await gemini_json(client, gemini_key, parser_prompt, user_text)
+                    parsed = await gemini_json(client, pool, parser_prompt, user_text)
                 except GeminiError as exc:
                     if exc.code in ("invalid_key", "missing_key"):
                         raise
@@ -657,7 +779,7 @@ async def run_monitoring(request: Request):
                 + json.dumps(mentions[:MAX_MENTIONS_FOR_SCORING], ensure_ascii=False)
             )
             try:
-                score = await gemini_json(client, gemini_key,
+                score = await gemini_json(client, pool,
                                           load_skill("reputation-scoring"), scoring_input)
             except GeminiError as exc:
                 return JSONResponse({"error": exc.message, "code": exc.code}, status_code=502)

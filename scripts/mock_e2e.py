@@ -26,7 +26,7 @@ from pathlib import Path
 import httpx
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 MOCK_PORT = 9100
@@ -113,8 +113,20 @@ async def reviews():
     return HTMLResponse(REVIEWS)
 
 
+# Any key containing this token is treated as permanently rate-limited (429),
+# letting us prove the pool fails over to a healthy key.
+EXHAUSTED_TOKEN = "exhausted"
+
+
 @mock.post("/v1beta/models/{model}")
 async def gemini(model: str, request: Request):
+    api_key = request.query_params.get("key", "")
+    if EXHAUSTED_TOKEN in api_key:
+        return JSONResponse(
+            {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED",
+                       "message": "Quota exceeded for this key."}},
+            status_code=429,
+        )
     body = await request.json()
     system_text = body["system_instruction"]["parts"][0]["text"]
     user_text = body["contents"][0]["parts"][0]["text"]
@@ -170,15 +182,19 @@ def main() -> int:
             check("starts with 2 free runs", data == {"unlocked": False, "used": 0, "remaining": 2}, data)
 
             print("Step 2 — discovery (fenced JSON from mock Gemini)")
+            # First key is permanently rate-limited; the pool must fail over to
+            # the healthy second key and still complete the run.
+            multi_keys = ["exhausted-key-1", "good-key-2"]
             resp = client.post("/api/discover", json={
-                "gemini_key": "mock-key", "website_url": f"{MOCK}/site", "industry": ""})
-            check("discover returns 200", resp.status_code == 200, resp.text[:200])
+                "gemini_keys": multi_keys, "website_url": f"{MOCK}/site", "industry": ""})
+            check("discover returns 200 (failed over from exhausted key)",
+                  resp.status_code == 200, resp.text[:200])
             disc = resp.json()
             check("profile extracted through fence-stripper",
                   disc.get("profile", {}).get("brand_name") == "Acme Analytics")
             check("watchlist present", len(disc.get("watchlist", [])) == 1)
 
-            run_body = {"gemini_key": "mock-key", "profile": disc["profile"],
+            run_body = {"gemini_keys": multi_keys, "profile": disc["profile"],
                         "search_queries": [],
                         "sources": [{"platform": "Trustpilot", "url": f"{MOCK}/reviews"}]}
 
@@ -230,6 +246,22 @@ def main() -> int:
                   and "e2e@acme-analytics.co.uk" in resp.text, resp.text[:200])
             check("export rejects wrong password",
                   client.get("/export", auth=("admin", "nope")).status_code == 401)
+
+            print("Step 7 — key-pool failure modes")
+            # All keys exhausted: clear quota error, not a silent hang.
+            resp = client.post("/api/discover", json={
+                "gemini_keys": ["exhausted-a", "exhausted-b"],
+                "website_url": f"{MOCK}/site"})
+            check("all-exhausted pool returns a clear quota/invalid error",
+                  resp.status_code == 502
+                  and resp.json().get("code") in ("quota", "invalid_key"),
+                  resp.text[:200])
+            # No keys at all: missing-key error.
+            resp = client.post("/api/discover", json={
+                "gemini_keys": [], "website_url": f"{MOCK}/site"})
+            check("empty pool returns missing_key",
+                  resp.status_code == 502 and resp.json().get("code") == "missing_key",
+                  resp.text[:200])
     finally:
         proc.terminate()
         proc.wait(timeout=10)

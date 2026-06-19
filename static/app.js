@@ -39,11 +39,35 @@
       $(id).value = localStorage.getItem(key) || "";
       $(id).addEventListener("change", () => localStorage.setItem(key, $(id).value.trim()));
     }
+    // Restore any backup Gemini keys saved as a JSON array.
+    try {
+      const extra = JSON.parse(localStorage.getItem("bw_gemini_keys_extra") || "[]");
+      if (Array.isArray(extra)) extra.forEach((k) => addGeminiKeyRow(k));
+    } catch { /* ignore corrupt storage */ }
+  }
+
+  /* ----------------------------------------------------- gemini keys */
+
+  function addGeminiKeyRow(value = "") {
+    const row = document.createElement("div");
+    row.className = "custom-url-row";
+    row.innerHTML = `<input type="password" placeholder="Backup key — AIza…" autocomplete="off">
+                     <button type="button" title="Remove">×</button>`;
+    row.querySelector("input").value = value;
+    row.querySelector("button").addEventListener("click", () => row.remove());
+    $("gemini-extra-list").appendChild(row);
+    return row;
+  }
+
+  function geminiKeys() {
+    const all = [$("cfg-gemini").value.trim()];
+    document.querySelectorAll("#gemini-extra-list input").forEach((i) => all.push(i.value.trim()));
+    return [...new Set(all.filter(Boolean))];
   }
 
   function keys() {
     return {
-      gemini_key: $("cfg-gemini").value.trim(),
+      gemini_keys: geminiKeys(),
       reddit: {
         client_id: $("cfg-reddit-id").value.trim(),
         client_secret: $("cfg-reddit-secret").value.trim(),
@@ -105,21 +129,26 @@
   }
 
   function saveSettings() {
-    // Optional fields are simply disregarded when blank; Gemini is required.
-    if (!$("cfg-gemini").value.trim()) {
+    // Optional fields are simply disregarded when blank; at least one Gemini
+    // key is required. If the primary is blank but a backup was filled in,
+    // promote the first backup so storage stays tidy.
+    const all = geminiKeys();
+    if (!all.length) {
       geminiFieldError(true);
       $("cfg-gemini").focus();
       return;
     }
     geminiFieldError(false);
+    $("cfg-gemini").value = all[0];
     for (const [id, key] of Object.entries(CFG_FIELDS)) {
       localStorage.setItem(key, $(id).value.trim());
     }
+    localStorage.setItem("bw_gemini_keys_extra", JSON.stringify(all.slice(1)));
     $("settings-modal").hidden = true;
   }
 
   function requireGeminiKey() {
-    if ($("cfg-gemini").value.trim()) return true;
+    if (geminiKeys().length) return true;
     openSettings(true);
     return false;
   }
@@ -640,6 +669,7 @@
   $("settings-modal").addEventListener("click", (e) => {
     if (e.target === $("settings-modal")) $("settings-modal").hidden = true;
   });
+  $("btn-add-gemini").addEventListener("click", () => addGeminiKeyRow().querySelector("input").focus());
   $("btn-add-url").addEventListener("click", () => addCustomUrlRow());
   $("btn-discover").addEventListener("click", discover);
   $("btn-watch-add-url").addEventListener("click", addWatchlistUrl);

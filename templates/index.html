@@ -186,12 +186,16 @@
        never saved on our servers, never logged.</p>
 
     <section class="settings-section">
-      <h3>Google Gemini API key <span class="badge badge-req">Required</span></h3>
+      <h3>Google Gemini API keys <span class="badge badge-req">Required</span></h3>
       <p class="micro">Powers the whole analysis. Free in 30 seconds from
-         <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a>.</p>
-      <input type="password" id="cfg-gemini" placeholder="AIza…" autocomplete="off">
+         <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a>.
+         <strong>Add two or more</strong> and the analysis spreads its calls across them and fails
+         over automatically — so a single free-tier rate limit can't stall your run.</p>
+      <input type="password" id="cfg-gemini" placeholder="Primary key — AIza…" autocomplete="off">
+      <div id="gemini-extra-list"></div>
+      <button type="button" class="btn btn-ghost" id="btn-add-gemini">+ Add another Gemini key</button>
       <div class="field-error" id="gemini-error" hidden>
-        A Gemini API key is required before you can run an analysis —
+        At least one Gemini API key is required before you can run an analysis —
         <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">get a free key here</a>.
       </div>
     </section>
