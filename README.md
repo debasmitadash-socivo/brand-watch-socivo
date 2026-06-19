@@ -29,6 +29,17 @@ watchlist → **run** (`/api/run`): concurrent ingestion → parsing
 (universal-parser + sentiment-calibration skills, 30k-char chunks, defensive
 JSON handling with one retry) → scoring (reputation-scoring skill).
 
+**Onboarding:** the first-run Gemini key is captured *inline in the hero* (not a
+Settings detour) so a LinkedIn visitor never loses context; the key is saved to
+localStorage and the analysis starts immediately. Returning visitors skip it.
+
+**Growth loop:** every report exposes a shareable **score card** —
+`GET /api/share-card?brand=…&score=…&band=…` renders a 1200×630 PNG (LinkedIn/OG
+ratio) of the 0–100 score, ungated, with a "Powered by Brand Watch" watermark.
+The results toolbar offers "📷 Share card" (download) and "Share on LinkedIn"
+(downloads the card, then opens LinkedIn's composer pointed at the tool, which
+unfurls `static/og-cover.png` via the page's Open-Graph tags).
+
 ### Data sources (all run automatically, no customer keys required)
 
 Tuned for B2B SaaS / tech brands, where reputation lives in technical

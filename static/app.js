@@ -153,6 +153,26 @@
     return false;
   }
 
+  /* First-run key capture, inline in the hero — no Settings detour. Returning
+     visitors already have a key saved, so this never shows for them. */
+  function ensureKeyForDiscover() {
+    if (geminiKeys().length) return true;
+    const panel = $("inline-key");
+    panel.hidden = false;
+    $("inline-gemini").focus();
+    panel.scrollIntoView({ behavior: "smooth", block: "center" });
+    return false;
+  }
+
+  function saveInlineKey() {
+    const v = $("inline-gemini").value.trim();
+    if (!v) { $("inline-gemini").focus(); return; }
+    $("cfg-gemini").value = v;
+    localStorage.setItem("bw_gemini_key", v);
+    $("inline-key").hidden = true;
+    discover();
+  }
+
   /* ------------------------------------------------------- discovery */
 
   async function discover() {
@@ -161,7 +181,8 @@
     errBox.hidden = true;
     const website = $("cfg-website").value.trim();
     if (!website) return showError(errBox, "Enter your company website URL first.");
-    if (!requireGeminiKey()) return;
+    if (!ensureKeyForDiscover()) return;
+    $("inline-key").hidden = true;
 
     btn.disabled = true;
     btn.textContent = "Reading your website…";
@@ -336,6 +357,7 @@
 
     // Gauge
     const value = clampScore(score.score);
+    toggleShareButtons(value !== null);
     animateScore(value);
     $("gauge-band").textContent = score.band || (value === null ? "No data" : bandFor(value));
     $("low-data-badge").hidden = !score.low_data;
@@ -618,6 +640,44 @@
     window.location.href = "/api/blueprint";
   }
 
+  /* ------------------------------------------------ share card (growth) */
+
+  function shareCardUrl() {
+    const raw = state.results && state.results.score ? state.results.score.score : null;
+    const s = clampScore(raw);
+    if (s === null) return null;
+    const brand = (state.profile && state.profile.brand_name) || "Your brand";
+    const band = (state.results.score && state.results.score.band) || bandFor(s);
+    const params = new URLSearchParams({ brand, score: String(Math.round(s)), band });
+    return "/api/share-card?" + params.toString();
+  }
+
+  function downloadShareCard() {
+    const url = shareCardUrl();
+    if (!url) return;
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "reputation-score.png";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  function shareLinkedIn() {
+    // Grab the personalised card first so it's ready to attach to the post,
+    // then open LinkedIn's composer pointed at the tool (it unfurls our OG card).
+    downloadShareCard();
+    const pageUrl = window.location.origin + window.location.pathname;
+    window.open(
+      "https://www.linkedin.com/sharing/share-offsite/?url=" + encodeURIComponent(pageUrl),
+      "_blank", "noopener,width=720,height=640");
+  }
+
+  function toggleShareButtons(hasScore) {
+    $("btn-share-card").hidden = !hasScore;
+    $("btn-share-linkedin").hidden = !hasScore;
+  }
+
   /* ----------------------------------------------------------- utils */
 
   function esc(v) {
@@ -689,9 +749,15 @@
   $("btn-add-gemini").addEventListener("click", () => addGeminiKeyRow().querySelector("input").focus());
   $("btn-add-url").addEventListener("click", () => addCustomUrlRow());
   $("btn-discover").addEventListener("click", discover);
+  ["cfg-website", "cfg-industry"].forEach((id) =>
+    $(id).addEventListener("keydown", (e) => { if (e.key === "Enter") discover(); }));
+  $("inline-key-save").addEventListener("click", saveInlineKey);
+  $("inline-gemini").addEventListener("keydown", (e) => { if (e.key === "Enter") saveInlineKey(); });
   $("btn-watch-add-url").addEventListener("click", addWatchlistUrl);
   $("btn-run").addEventListener("click", runMonitoring);
   $("btn-new-analysis").addEventListener("click", resetToStart);
+  $("btn-share-card").addEventListener("click", downloadShareCard);
+  $("btn-share-linkedin").addEventListener("click", shareLinkedIn);
   $("btn-pdf").addEventListener("click", requirePdf);
   $("btn-blueprint").addEventListener("click", requireBlueprint);
   $("gate-submit").addEventListener("click", submitGate);

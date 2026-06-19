@@ -909,6 +909,108 @@ def gate_state(request: Request) -> tuple[bool, int]:
     return unlocked, used
 
 
+# ----------------------------------------------------------- share card
+
+# A 1200×630 (LinkedIn/Open-Graph ratio) PNG summarising the score. This is the
+# artifact users post back to LinkedIn — the growth loop — so it is ungated and
+# rendered fresh from query params (no secrets, nothing stored).
+SHARE_W, SHARE_H = 1200, 630
+_FONT_DIR = "/usr/share/fonts/truetype/dejavu"
+
+
+def _font(size: int, bold: bool = False):
+    from PIL import ImageFont
+    name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
+    for path in (f"{_FONT_DIR}/{name}", name):
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def _band_for(score: int) -> str:
+    if score < 40:
+        return "At Risk"
+    if score < 60:
+        return "Mixed"
+    if score < 75:
+        return "Healthy"
+    if score < 90:
+        return "Strong"
+    return "Exceptional"
+
+
+def _band_colour(score: int) -> tuple[int, int, int]:
+    if score < 40:
+        return (248, 113, 113)
+    if score < 60:
+        return (251, 191, 36)
+    if score < 75:
+        return (129, 140, 248)
+    return (52, 211, 153)
+
+
+def _ellipsis(text: str, font, draw, max_w: int) -> str:
+    if draw.textlength(text, font=font) <= max_w:
+        return text
+    while text and draw.textlength(text + "…", font=font) > max_w:
+        text = text[:-1]
+    return (text + "…") if text else ""
+
+
+def render_share_card(brand: str, score: int, band: str) -> bytes:
+    from PIL import Image, ImageDraw, ImageFilter
+    img = Image.new("RGB", (SHARE_W, SHARE_H), (10, 14, 26))
+
+    # Ambient accent glow — translucent ellipses, blurred into soft radial halos.
+    glow = Image.new("RGBA", (SHARE_W, SHARE_H), (0, 0, 0, 0))
+    gdraw = ImageDraw.Draw(glow)
+    gdraw.ellipse([-220, -300, 540, 380], fill=(99, 102, 241, 70))
+    gdraw.ellipse([840, 320, 1520, 940], fill=(34, 211, 238, 45))
+    glow = glow.filter(ImageFilter.GaussianBlur(120))
+    img = Image.alpha_composite(img.convert("RGBA"), glow).convert("RGB")
+    draw = ImageDraw.Draw(img)
+
+    accent = _band_colour(score)
+
+    # Wordmark
+    draw.rounded_rectangle([64, 60, 92, 88], radius=7, fill=(129, 140, 248))
+    draw.text((108, 60), "BRAND WATCH", font=_font(30, bold=True), fill=(232, 237, 246))
+
+    # Brand name
+    brand_font = _font(58, bold=True)
+    brand = _ellipsis(brand or "Your brand", brand_font, draw, SHARE_W - 128)
+    draw.text((64, 176), brand, font=brand_font, fill=(232, 237, 246))
+
+    draw.text((64, 270), "REPUTATION SCORE", font=_font(26, bold=True),
+              fill=(147, 163, 188))
+
+    # Big score + band
+    score_font = _font(220, bold=True)
+    draw.text((58, 296), str(score), font=score_font, fill=accent)
+    score_w = draw.textlength(str(score), font=score_font)
+    draw.text((58 + score_w + 18, 360), "/100", font=_font(54, bold=True),
+              fill=(93, 108, 133))
+
+    # Band pill
+    band = band or _band_for(score)
+    bf = _font(34, bold=True)
+    bw = draw.textlength(band.upper(), font=bf)
+    pill = [58 + score_w + 18, 440, 58 + score_w + 18 + bw + 56, 502]
+    draw.rounded_rectangle(pill, radius=31, fill=(accent[0], accent[1], accent[2]))
+    draw.text((pill[0] + 28, 450), band.upper(), font=bf, fill=(10, 14, 26))
+
+    # Footer watermark
+    draw.line([64, 566, SHARE_W - 64, 566], fill=(148, 163, 184, 60), width=1)
+    draw.text((64, 582), "Free brand reputation report · Powered by Brand Watch",
+              font=_font(24), fill=(147, 163, 188))
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 # ---------------------------------------------------------------- routes
 
 @app.get("/", response_class=HTMLResponse)
@@ -1246,6 +1348,23 @@ async def credits(request: Request):
             "remaining": None if unlocked else max(0, FREE_RUNS - used)}
 
 
+@app.get("/api/share-card")
+async def share_card(brand: str = "", score: int = 0, band: str = ""):
+    try:
+        score = max(0, min(100, int(score)))
+    except (TypeError, ValueError):
+        score = 0
+    brand = (brand or "Your brand").strip()[:48]
+    band = (band or "").strip()[:24]
+    png = render_share_card(brand, score, band)
+    safe = re.sub(r"[^a-z0-9]+", "-", brand.lower()).strip("-") or "brand"
+    return Response(
+        png, media_type="image/png",
+        headers={"Content-Disposition": f'inline; filename="{safe}-reputation-score.png"',
+                 "Cache-Control": "public, max-age=3600"},
+    )
+
+
 # ------------------------------------------------------------ blueprint zip
 
 BLUEPRINT_FILES = [
@@ -1256,6 +1375,7 @@ BLUEPRINT_FILES = [
     "templates/index.html",
     "static/app.js",
     "static/style.css",
+    "static/og-cover.png",
     "static/vendor/chart.umd.min.js",
     "skills/brand-discovery/SKILL.md",
     "skills/universal-parser/SKILL.md",
@@ -1285,7 +1405,8 @@ async def blueprint(request: Request):
         for rel in BLUEPRINT_FILES:
             path = BASE_DIR / rel
             if path.exists():
-                zf.writestr(f"brand-watch/{rel}", path.read_text(encoding="utf-8"))
+                # read_bytes keeps binary assets (e.g. the PNG cover) intact.
+                zf.writestr(f"brand-watch/{rel}", path.read_bytes())
         zf.writestr("brand-watch/.env.example", ENV_EXAMPLE)
         readme = (BASE_DIR / "blueprint" / "README.md").read_text(encoding="utf-8")
         zf.writestr("brand-watch/README.md", readme)

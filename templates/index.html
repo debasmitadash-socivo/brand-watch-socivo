@@ -5,6 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Brand Watch — Know what the internet really thinks of your brand</title>
 <meta name="description" content="AI-powered brand sentiment monitoring for B2B teams. One URL in, a consultant-grade reputation report out. Free, on your own keys.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Brand Watch — your free brand reputation score">
+<meta property="og:description" content="One URL in, a 0–100 Reputation Score and a consultant-grade report out. Free, runs on your own keys.">
+<meta property="og:image" content="/static/og-cover.png">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="stylesheet" href="/static/style.css">
 <script src="/static/vendor/chart.umd.min.js"></script>
 </head>
@@ -46,6 +51,20 @@
       <input type="text" id="cfg-industry" class="industry-input" placeholder="Industry (optional)">
       <button type="button" class="btn btn-primary btn-cta" id="btn-discover">Analyse my brand →</button>
     </div>
+
+    <!-- Inline key capture — revealed only when a first-time visitor has no key,
+         so they never leave the hero for the Settings modal. -->
+    <div class="inline-key" id="inline-key" hidden>
+      <p class="inline-key-copy">⚡ One free step: paste your Google Gemini key. It's free in 30 seconds,
+         powers the whole analysis, and <strong>stays in your browser</strong> — we never see or store it.</p>
+      <div class="inline-key-row">
+        <input type="password" id="inline-gemini" placeholder="AIza…" autocomplete="off">
+        <button type="button" class="btn btn-primary" id="inline-key-save">Save &amp; analyse →</button>
+      </div>
+      <a class="inline-key-link" href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">
+        Get a free Gemini key → (no card, takes ~30s)</a>
+    </div>
+
     <div class="error-box" id="discover-error" hidden></div>
 
     <div class="trust-row">
@@ -94,6 +113,8 @@
       <h2>Your reputation report</h2>
       <div>
         <button type="button" class="btn btn-ghost" id="btn-new-analysis">↻ Analyse another brand</button>
+        <button type="button" class="btn btn-secondary" id="btn-share-card">📷 Share card</button>
+        <button type="button" class="btn btn-secondary" id="btn-share-linkedin">Share on LinkedIn</button>
         <button type="button" class="btn btn-secondary" id="btn-pdf">Download PDF Report</button>
         <button type="button" class="btn btn-secondary" id="btn-blueprint">Download Source Code Blueprint</button>
       </div>

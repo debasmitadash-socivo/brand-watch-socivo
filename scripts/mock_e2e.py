@@ -249,6 +249,17 @@ def main() -> int:
             check("export rejects wrong password",
                   client.get("/export", auth=("admin", "nope")).status_code == 401)
 
+            print("Step 6b — share card (ungated growth asset)")
+            resp = client.get("/api/share-card",
+                              params={"brand": "Acme Analytics", "score": 62, "band": "Healthy"})
+            check("share card returns a PNG",
+                  resp.status_code == 200
+                  and resp.headers["content-type"] == "image/png"
+                  and resp.content[:8] == b"\x89PNG\r\n\x1a\n",
+                  resp.status_code)
+            check("share card clamps an out-of-range score",
+                  client.get("/api/share-card", params={"score": 999}).status_code == 200)
+
             print("Step 7 — key-pool failure modes")
             # All keys exhausted: clear quota error, not a silent hang.
             resp = client.post("/api/discover", json={
