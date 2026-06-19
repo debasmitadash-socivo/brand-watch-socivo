@@ -204,6 +204,38 @@ class GeminiKeyPool:
             return len(self._dead) >= len(self.keys)
 
 
+def diagnose_gemini_error(detail: str) -> str:
+    """Turn a raw Gemini error body into a plain-English, actionable hint."""
+    d = (detail or "").lower()
+    if not d:
+        return ("Gemini kept failing across every supplied key, with no error "
+                "detail returned.")
+    if "user location is not supported" in d or "location is not supported" in d \
+            or ("failed_precondition" in d and "location" in d):
+        return ("Your key is valid, but the Gemini free API is not available in "
+                "this key's country/region yet. Create the key on a Google "
+                "account whose region is supported (e.g. set to the US), or use a "
+                "paid/billing-enabled key.")
+    if "has not been used in project" in d or "service_disabled" in d \
+            or "it is disabled" in d or ("permission_denied" in d and "api" in d and "enable" in d):
+        return ("Your key is valid, but the Generative Language API isn't enabled "
+                "for its Google Cloud project. Easiest fix: create the key at "
+                f"{GEMINI_KEY_URL} (Google AI Studio enables the API automatically).")
+    if "referer" in d or "referrer" in d or ("requests from" in d and "blocked" in d) \
+            or "ip address" in d:
+        return ("Your key has application restrictions (HTTP referrer or IP). "
+                "Remove them in the Google Cloud console, or make a fresh "
+                f"unrestricted key at {GEMINI_KEY_URL}.")
+    if "api_key_invalid" in d or "api key not valid" in d or "invalid api key" in d:
+        return ("The API key string was not accepted — check for a stray space or "
+                "missing characters when pasting, or generate a new key at "
+                f"{GEMINI_KEY_URL}.")
+    if "resource_exhausted" in d or "quota" in d or "429" in d:
+        return ("Every supplied key is over its free-tier quota. Add another free "
+                f"key in Settings, or wait for the quota to reset ({GEMINI_KEY_URL}).")
+    return (f"Gemini rejected every supplied key. Google's response was: {detail[:240]}")
+
+
 async def call_gemini(client: httpx.AsyncClient, pool: "GeminiKeyPool",
                       system_prompt: str, user_text: str) -> str:
     if not pool.has_keys():
@@ -221,14 +253,12 @@ async def call_gemini(client: httpx.AsyncClient, pool: "GeminiKeyPool",
     # short cooldowns, without looping forever on a dead pool.
     max_attempts = max(6, len(pool.keys) * 4)
     saw_rate_limit = False
+    only_rate_limited = True   # becomes False if any key fails for a non-429 reason
+    last_detail = ""
     for _ in range(max_attempts):
         status, idx, val = await pool.acquire()
         if status == "dead":
-            raise GeminiError(
-                "invalid_key",
-                "Every Gemini key supplied was rejected. Double-check them, or "
-                f"add a fresh free key at {GEMINI_KEY_URL}.",
-            )
+            break
         if status == "wait":
             saw_rate_limit = True
             await asyncio.sleep(min(float(val), MAX_WAIT_SLEEP) + random.uniform(0, 1.0))
@@ -239,20 +269,26 @@ async def call_gemini(client: httpx.AsyncClient, pool: "GeminiKeyPool",
                 GEMINI_URL, params={"key": key}, json=payload,
                 timeout=GEMINI_TIMEOUT,
             )
-        except httpx.HTTPError:
+        except httpx.HTTPError as exc:
+            only_rate_limited = False
+            last_detail = f"network error reaching Gemini: {exc}"
             await pool.report_transient(idx, 3.0)
             continue
         if resp.status_code == 429:
             saw_rate_limit = True
+            last_detail = (resp.text[:300] or "HTTP 429 (rate limit / quota)")
             await pool.report_rate_limited(idx)
             continue
         if resp.status_code in (400, 401, 403):
-            body = resp.text[:500]
-            if "API_KEY_INVALID" in body or "API key" in body or resp.status_code in (401, 403):
-                await pool.report_invalid(idx)
-                continue
-            raise GeminiError("bad_request", f"Gemini rejected the request: {body}")
+            # A rejected key won't recover by retrying — retire it for this run,
+            # but keep the body so we can tell the user *why*.
+            only_rate_limited = False
+            last_detail = f"HTTP {resp.status_code}: {resp.text[:400]}"
+            await pool.report_invalid(idx)
+            continue
         if resp.status_code >= 500:
+            only_rate_limited = False
+            last_detail = f"Gemini server error (HTTP {resp.status_code})"
             await pool.report_transient(idx, 2.5)
             continue
         data = resp.json()
@@ -267,15 +303,10 @@ async def call_gemini(client: httpx.AsyncClient, pool: "GeminiKeyPool",
         await pool.report_ok(idx)
         return text
 
-    if await pool.all_dead():
-        raise GeminiError(
-            "invalid_key",
-            "Every Gemini key supplied was rejected or exhausted. Add a fresh "
-            f"free key at {GEMINI_KEY_URL}.",
-        )
-    if saw_rate_limit:
-        suffix = ("Add a second free key in Settings so the analysis can fail "
-                  "over between keys and avoid stalling."
+    # Every key is spent. Report the most useful reason we saw.
+    if saw_rate_limit and only_rate_limited:
+        suffix = ("Add a second free key in Settings so the analysis can fail over "
+                  "between keys and avoid stalling."
                   if len(pool.keys) < 2 else
                   "Wait a minute for the per-minute limit to reset, then retry.")
         raise GeminiError(
@@ -283,7 +314,7 @@ async def call_gemini(client: httpx.AsyncClient, pool: "GeminiKeyPool",
             "All supplied Gemini keys are rate-limited or over their free quota. "
             + suffix,
         )
-    raise GeminiError("server", "Gemini API kept failing across all supplied keys.")
+    raise GeminiError("invalid_key", diagnose_gemini_error(last_detail))
 
 
 def strip_fences(text: str) -> str:
