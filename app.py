@@ -11,6 +11,10 @@ Run locally:
     python app.py            # or: uvicorn app:app --reload
 """
 
+# Defer annotation evaluation so modern union hints (e.g. `int | None`) work on
+# Python 3.9 as well as 3.10+. Must stay the first statement after the docstring.
+from __future__ import annotations
+
 import asyncio
 import csv
 import io
