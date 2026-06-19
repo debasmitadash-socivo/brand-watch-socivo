@@ -650,6 +650,23 @@
     return msg;
   }
 
+  /* --------------------------------------------------- new analysis */
+
+  function resetToStart() {
+    // Return to the search bar for a fresh brand, keeping keys/settings intact.
+    ["profile-panel", "watchlist-panel", "results-panel", "progress-panel"]
+      .forEach((id) => { $(id).hidden = true; });
+    $("hero-panel").hidden = false;
+    $("discover-error").hidden = true;
+    state.profile = null;
+    state.watchlist = [];
+    state.results = null;
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    const url = $("cfg-website");
+    url.focus();
+    url.select();
+  }
+
   /* ------------------------------------------------------------ init */
 
   if (window.Chart) {
@@ -674,6 +691,7 @@
   $("btn-discover").addEventListener("click", discover);
   $("btn-watch-add-url").addEventListener("click", addWatchlistUrl);
   $("btn-run").addEventListener("click", runMonitoring);
+  $("btn-new-analysis").addEventListener("click", resetToStart);
   $("btn-pdf").addEventListener("click", requirePdf);
   $("btn-blueprint").addEventListener("click", requireBlueprint);
   $("gate-submit").addEventListener("click", submitGate);
