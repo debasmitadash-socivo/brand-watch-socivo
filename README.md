@@ -56,7 +56,7 @@ dashboard Settings panel by each user:
 | `EXPORT_PASSWORD` | **Required to download leads.** Protects `/export` (HTTP basic auth, username `admin`) |
 | `GEMINI_API_KEY` | Server-side default Gemini key (normally leave unset) |
 | `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` / `REDDIT_USERNAME` | Server-side Reddit defaults |
-| `GEMINI_MODEL` | Defaults to `gemini-2.0-flash` |
+| `GEMINI_MODEL` | Defaults to `gemini-2.5-flash`. If your account shows a `limit: 0` free-tier error, try `gemini-2.5-flash-lite`, or enable billing on the key's project |
 | `PORT` | Defaults to `8000` |
 
 ## Deploy on a free tier (Render / Railway)

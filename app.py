@@ -45,7 +45,7 @@ BASE_DIR = Path(__file__).resolve().parent
 SKILLS_DIR = BASE_DIR / "skills"
 DB_PATH = BASE_DIR / "leads.db"
 
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 GEMINI_API_BASE = os.environ.get("GEMINI_API_BASE",
                                  "https://generativelanguage.googleapis.com")
 GEMINI_URL = f"{GEMINI_API_BASE}/v1beta/models/{GEMINI_MODEL}:generateContent"
@@ -230,6 +230,13 @@ def diagnose_gemini_error(detail: str) -> str:
         return ("The API key string was not accepted — check for a stray space or "
                 "missing characters when pasting, or generate a new key at "
                 f"{GEMINI_KEY_URL}.")
+    if "limit: 0" in d or "limit:0" in d:
+        return ("Your key is valid, but this Google account gives 0 free-tier "
+                f"requests for the model '{GEMINI_MODEL}'. That model's free tier "
+                "isn't available to you. Fix: set a different model via the "
+                "GEMINI_MODEL env var (e.g. gemini-2.5-flash or "
+                "gemini-2.5-flash-lite), or enable billing on the key's project "
+                "(Gemini Flash pay-as-you-go is extremely cheap).")
     if "resource_exhausted" in d or "quota" in d or "429" in d:
         return ("Every supplied key is over its free-tier quota. Add another free "
                 f"key in Settings, or wait for the quota to reset ({GEMINI_KEY_URL}).")
@@ -275,9 +282,17 @@ async def call_gemini(client: httpx.AsyncClient, pool: "GeminiKeyPool",
             await pool.report_transient(idx, 3.0)
             continue
         if resp.status_code == 429:
-            saw_rate_limit = True
-            last_detail = (resp.text[:300] or "HTTP 429 (rate limit / quota)")
-            await pool.report_rate_limited(idx)
+            body = resp.text[:600]
+            last_detail = body or "HTTP 429 (rate limit / quota)"
+            if "limit: 0" in body or "limit:0" in body:
+                # Not a transient spike — this model has no free tier for this
+                # account. Retiring the key and surfacing the real reason is
+                # more honest than telling them to "wait a minute".
+                only_rate_limited = False
+                await pool.report_invalid(idx)
+            else:
+                saw_rate_limit = True
+                await pool.report_rate_limited(idx)
             continue
         if resp.status_code in (400, 401, 403):
             # A rejected key won't recover by retrying — retire it for this run,
